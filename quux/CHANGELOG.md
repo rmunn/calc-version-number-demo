@@ -8,6 +8,7 @@ A third project in this repo
 
 ### Added
 - New features
+- Ready to release
 
 ### Deprecated
 - Everything old; lots of breaking changes here
