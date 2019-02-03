@@ -79,6 +79,8 @@ let maybeLoadChangelog (filename : string) =
     with :? System.IO.FileNotFoundException ->
         None
 
+// Unusued in current demo. TODO: Write another build target that will demo this
+// (Demo would show current changelog, bump the changelog, show the changelog after it's been bumped)
 let bumpChangelog (filename : string) =
     try
         let changelog = Changelog.load filename
@@ -138,21 +140,20 @@ let commitsSinceLastTag (projectDir : System.IO.DirectoryInfo) =
             let _, result2, _ = runGitCommand projRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern2)
             result2
         if mostRecentTags |> List.isEmpty then
-            Trace.traceImportant "No tags found here"
+            Trace.traceImportant "No tags found - can't calculate prerelease version"
             None
         else
             let recentTag = mostRecentTags |> List.head
             let commitCount = runSimpleGitCommand projRoot (sprintf "rev-list --count %s..HEAD -- %s" recentTag relPath)
-            Trace.tracefn "Filtered count: %A" commitCount
             Some commitCount
 
-let calcVersion (projectDir : System.IO.DirectoryInfo) =
+let calcNextVersion (projectDir : System.IO.DirectoryInfo) =
     let changelogFname = projectDir.FullName @@ "CHANGELOG.md"  // Useful elsewhere
     let changelogVersion =
         match maybeLoadChangelog changelogFname with
         | None -> None
         | Some ch when ch.Entries |> List.isEmpty -> None
-        | Some ch -> ch.LatestEntry.SemVer.NormalizeToShorter() |> Some  // TODO: Or just .SemVer if we want a SemVerInfo type here
+        | Some ch -> (nextVer ch).AsString |> Some
     match changelogVersion with
     | Some v -> v
     | None ->
@@ -160,9 +161,9 @@ let calcVersion (projectDir : System.IO.DirectoryInfo) =
         | Some v -> v
         | None -> "0.0.1"
 
-let calcPrereleaseVersion (projectDir : System.IO.DirectoryInfo) =
+let calcNextPrereleaseVersion (projectDir : System.IO.DirectoryInfo) =
     Trace.tracefn "calcPrereleaseVersion %s" projectDir.FullName
-    let version = calcVersion projectDir
+    let version = calcNextVersion projectDir
     let commitCount =
         match commitsSinceLastTag projectDir with
         | Some n -> n
@@ -199,71 +200,16 @@ Target.create "Alpha" (fun _ ->
     Trace.trace "Figuring out alpha versions..."
     for proj in !! "**/*.csproj" do
         let dir = (Fake.IO.FileInfo.ofPath proj).Directory
-        Trace.logfn "Prerelease version for project %s is %s" dir.Name (calcPrereleaseVersion dir)
+        Trace.traceImportantfn "Prerelease version for project %s would be %s" dir.Name (calcNextPrereleaseVersion dir)
 )
 
 Target.create "Normal" (fun _ ->
     Trace.trace "Figuring out alpha versions..."
     for proj in !! "**/*.csproj" do
         let dir = (Fake.IO.FileInfo.ofPath proj).Directory
-        Trace.logfn "Release version for project %s is %s" dir.Name (calcVersion dir)
+        Trace.traceImportantfn "Release version for project %s would be %s" dir.Name (calcNextVersion dir)
 )
 
-Target.create "Default" (fun _ ->
-    Trace.trace "Hello world from build.fsx"
-    let gitDir = findGitDir __SOURCE_DIRECTORY__
-    Trace.tracefn "Found Git dir in %s" gitDir.FullName
-    let ch = Changelog.load "CHANGELOG.md"
-    bumpChangelog "FOO.md"
-    Trace.tracefn "Last released version found in changelog for %s: %s" ch.Header ch.LatestEntry.NuGetVersion
-    // Trace.tracefn "Parsed as: %d.%d.%d" ver.Major ver.Minor ver.Patch
+Target.runOrDefault "Normal"
 
-    let pr = 5 |> sprintf "alpha.%d" |> PreRelease.TryParse
-    let ver' = { nextVer ch with PreRelease = pr }
-    Trace.tracefn "Next version: %s" ver'.AsString
-    Trace.tracefn "Normalized: %s" (ver'.Normalize())
-    Trace.tracefn "Normalized to shorter: %s" (ver'.NormalizeToShorter() + " and toString: " + ver'.ToString())
-)
-
-Target.create "Bar" (fun _ ->
-    let maybeProjRoot = findProjectRoot __SOURCE_DIRECTORY__
-    match maybeProjRoot with
-    | None -> Trace.traceImportant "No git dir found"
-    | Some projRoot ->
-        let _, msgs, _ = runGitCommandf "%s" projRoot "version"
-        Trace.trace "Git version was:"
-        for msg in msgs do
-            Trace.log msg
-)
-
-Target.create "Foo" (fun _ ->
-    Trace.tracefn "Running Foo target"
-    let projFiles = !! "**/*.csproj"
-    let projRoot = findProjectRoot __SOURCE_DIRECTORY__
-    if projRoot.IsNone then
-        Trace.trace "No Git repo found"
-    else
-        let projRoot = projRoot.Value
-        Trace.tracefn "Project root: %s" projRoot
-        for f in projFiles do
-            let dir = (Fake.IO.FileInfo.ofPath f).Directory
-            Trace.tracefn "Relative path: %s" (dir.FullName |> Path.toRelativeFrom projRoot)
-            Trace.tracefn "\"Fixed\" path: %s" (dir.FullName + "/" |> Path.toRelativeFrom projRoot |> Fake.Tools.Git.CommandHelper.fixPath)
-            Trace.tracefn "Last part of directory: %s" dir.Name
-            // let tag = "v*"
-            let tag = sprintf "%s-v*" dir.Name
-            // Example of how to look back through tags and pick out the *most recent* tag matching a certain pattern
-            let _, mostRecentTags, _ = Fake.Tools.Git.CommandHelper.runGitCommand projRoot <| sprintf "tag -l %s --sort=-creatordate" tag
-            if mostRecentTags |> List.isEmpty then
-                Trace.tracefn "No tags found"
-            else
-                Trace.tracefn "Most recent tag matching pattern: %s" (mostRecentTags |> List.head)
-                let recentTag = mostRecentTags |> List.head
-                let num = Fake.Tools.Git.Branches.revisionsBetween projRoot recentTag "HEAD"
-                Trace.tracefn "Looks like %d commits since then" num
-                let commitCount = Fake.Tools.Git.CommandHelper.runSimpleGitCommand projRoot <| sprintf "rev-list --count %s..HEAD -- %s" recentTag (dir.FullName |> Path.toRelativeFrom projRoot)
-                Trace.tracefn "Filtered count: %A" commitCount
-            // TODO: But we might want to look back at when a certain change was made to CHANGELOG.md
-)
-
-Target.runOrDefault "Foo"
+// TODO: Create README.md explaining how to install FAKE (dotnet tool install fake-cli -g) and run the build (fake build -t Alpha or fake build)
