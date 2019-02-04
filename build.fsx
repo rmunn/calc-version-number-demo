@@ -81,7 +81,7 @@ let maybeLoadChangelog (filename : string) =
 
 // Unusued in current demo. TODO: Write another build target that will demo this
 // (Demo would show current changelog, bump the changelog, show the changelog after it's been bumped)
-let bumpChangelog (filename : string) =
+let bumpChangelog (filename : string) (newFilename : string) =
     try
         let changelog = Changelog.load filename
         let i = semverInstruction changelog
@@ -91,7 +91,7 @@ let bumpChangelog (filename : string) =
             changelog
             |> adjustUnreleasedDescription
             |> Changelog.promoteUnreleased (nextVer changelog).AsString
-            |> Changelog.save filename
+            |> Changelog.save newFilename
     with :? System.IO.FileNotFoundException ->
         ()  // No changelog file? Then there's nothing to modify
 
@@ -108,7 +108,6 @@ let mostRecentTag (projectDir : System.IO.DirectoryInfo) =
         match maybeProjRoot with
         | None -> []
         | Some projRoot ->
-            let relPath = projectDir.FullName |> Path.toRelativeFrom projRoot |> fixPath
             let tagPattern1 = sprintf "%s-v*" projectDir.Name
             let tagPattern2 = sprintf "%s-*"  projectDir.Name
             let _, result1, _ = runGitCommand projRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern1)
@@ -203,13 +202,26 @@ Target.create "Alpha" (fun _ ->
         Trace.traceImportantfn "Prerelease version for project %s would be %s" dir.Name (calcNextPrereleaseVersion dir)
 )
 
-Target.create "Normal" (fun _ ->
-    Trace.trace "Figuring out alpha versions..."
+Target.create "Default" (fun _ ->
+    Trace.trace "Figuring out release versions..."
     for proj in !! "**/*.csproj" do
         let dir = (Fake.IO.FileInfo.ofPath proj).Directory
         Trace.traceImportantfn "Release version for project %s would be %s" dir.Name (calcNextVersion dir)
 )
 
-Target.runOrDefault "Normal"
+Target.create "BumpChangelog" (fun _ ->
+    Trace.trace "Writing updated changelog to NEW_CHANGELOG.md in all project directories..."
+    for proj in !! "**/*.csproj" do
+        let dir = (Fake.IO.FileInfo.ofPath proj).Directory
+        let chFname = dir.FullName @@ "CHANGELOG.md"
+        let newChFname= dir.FullName @@ "NEW_CHANGELOG.md"
+        bumpChangelog chFname newChFname
+        Trace.trace "\nOriginal changelog:"
+        Trace.logItems "" (System.IO.File.ReadAllLines(chFname))
+        Trace.trace "Updated changelog:"
+        Trace.logItems "" (System.IO.File.ReadAllLines(newChFname))
+)
+
+Target.runOrDefault "Default"
 
 // TODO: Create README.md explaining how to install FAKE (dotnet tool install fake-cli -g) and run the build (fake build -t Alpha or fake build)
