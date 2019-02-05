@@ -13,6 +13,14 @@ open Fake.IO
 open Fake.IO.FileSystemOperators
 open Fake.IO.Globbing.Operators
 open Fake.Tools.Git.CommandHelper
+open System.Text.RegularExpressions
+open System.IO
+
+// ===== Properties =====
+
+let projectRoot = __SOURCE_DIRECTORY__
+
+// ===== Utility functions =====
 
 let findSemver (changes : Changelog.Change list) =
     changes |> List.filter (fun s -> s.ToString().Contains("semver:"))
@@ -22,7 +30,7 @@ let splitLines (text : string) =
     |> String.convertTextToWindowsLineBreaks
     |> String.splitStr String.WindowsLineBreaks
 
-let semVerRe = System.Text.RegularExpressions.Regex @"^\+semver:\s?(\S+)$"
+let semVerRe = Regex(@"^\+semver:\s?(\S+)$")
 
 let semverInstruction (ch : Changelog.Changelog) =
     match ch.Unreleased with
@@ -76,47 +84,35 @@ let nextVer (ch : Changelog.Changelog) =
 let maybeLoadChangelog (filename : string) =
     try
         Changelog.load filename |> Some
-    with :? System.IO.FileNotFoundException ->
+    with :? FileNotFoundException ->
         None
 
-// Unusued in current demo. TODO: Write another build target that will demo this
-// (Demo would show current changelog, bump the changelog, show the changelog after it's been bumped)
 let bumpChangelog (filename : string) (newFilename : string) =
-    try
-        let changelog = Changelog.load filename
+    match maybeLoadChangelog filename with
+    | None -> ()  // No changelog file? Then there's nothing to modify
+    | Some changelog ->
         let i = semverInstruction changelog
         if i = "none" || i = "skip" then
-            ()
+            // We process "+semver: none/skip" as meaning "don't touch the changelog"
+            // To change this, just remove the "if" statement and dedent the "else" block by one indent level
+            filename |> Shell.copyFile newFilename
         else
             changelog
             |> adjustUnreleasedDescription
             |> Changelog.promoteUnreleased (nextVer changelog).AsString
             |> Changelog.save newFilename
-    with :? System.IO.FileNotFoundException ->
-        ()  // No changelog file? Then there's nothing to modify
 
-let findProjectRoot fromDir =
-    try
-        let gitDir = findGitDir fromDir
-        Some (gitDir.Parent.FullName)
-    with :? System.NullReferenceException ->
-        None
-
-let mostRecentTag (projectDir : System.IO.DirectoryInfo) =
-    let maybeProjRoot = findProjectRoot projectDir.FullName
+let mostRecentTag (projectDir : DirectoryInfo) =
     let recentTags =
-        match maybeProjRoot with
-        | None -> []
-        | Some projRoot ->
-            let tagPattern1 = sprintf "%s-v*" projectDir.Name
-            let tagPattern2 = sprintf "%s-*"  projectDir.Name
-            let _, result1, _ = runGitCommand projRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern1)
-            if not (result1 |> List.isEmpty) then result1 else
-            let _, result2, _ = runGitCommand projRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern2)
-            result2
+        let tagPattern1 = sprintf "%s-v*" projectDir.Name
+        let tagPattern2 = sprintf "%s-*"  projectDir.Name
+        let _, result1, _ = runGitCommand projectRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern1)
+        if not (result1 |> List.isEmpty) then result1 else
+        let _, result2, _ = runGitCommand projectRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern2)
+        result2
     recentTags |> List.tryHead
 
-let mostRecentVersionFromTag (projectDir : System.IO.DirectoryInfo) =
+let mostRecentVersionFromTag (projectDir : DirectoryInfo) =
     match mostRecentTag projectDir with
     | None -> None
     | Some tag ->
@@ -126,28 +122,25 @@ let mostRecentVersionFromTag (projectDir : System.IO.DirectoryInfo) =
         else
             Some tag.[cnt+1..]
 
-let commitsSinceLastTag (projectDir : System.IO.DirectoryInfo) =
-    match findProjectRoot projectDir.FullName with
-    | None -> None
-    | Some projRoot ->
-        let relPath = projectDir.FullName |> Path.toRelativeFrom projRoot |> fixPath
-        let mostRecentTags =
-            let tagPattern1 = sprintf "%s-v*" projectDir.Name
-            let tagPattern2 = sprintf "%s-*"  projectDir.Name
-            let _, result1, _ = runGitCommand projRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern1)
-            if not (result1 |> List.isEmpty) then result1 else
-            let _, result2, _ = runGitCommand projRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern2)
-            result2
-        if mostRecentTags |> List.isEmpty then
-            Trace.traceImportant "No tags found - can't calculate prerelease version"
-            None
-        else
-            let recentTag = mostRecentTags |> List.head
-            let commitCount = runSimpleGitCommand projRoot (sprintf "rev-list --count %s..HEAD -- %s" recentTag relPath)
-            Some commitCount
+let commitsSinceLastTag (projectDir : DirectoryInfo) =
+    let relPath = projectDir.FullName |> Path.toRelativeFrom projectRoot |> fixPath
+    let mostRecentTags =
+        let tagPattern1 = sprintf "%s-v*" projectDir.Name
+        let tagPattern2 = sprintf "%s-*"  projectDir.Name
+        let _, result1, _ = runGitCommand projectRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern1)
+        if not (result1 |> List.isEmpty) then result1 else
+        let _, result2, _ = runGitCommand projectRoot (sprintf "tag -l %s --sort=-creatordate" tagPattern2)
+        result2
+    if mostRecentTags |> List.isEmpty then
+        Trace.traceImportant "No tags found - can't calculate prerelease version"
+        None
+    else
+        let recentTag = mostRecentTags |> List.head
+        let commitCount = runSimpleGitCommand projectRoot (sprintf "rev-list --count %s..HEAD -- %s" recentTag relPath)
+        Some commitCount
 
-let calcNextVersion (projectDir : System.IO.DirectoryInfo) =
-    let changelogFname = projectDir.FullName @@ "CHANGELOG.md"  // Useful elsewhere
+let calcNextVersion (projectDir : DirectoryInfo) =
+    let changelogFname = projectDir.FullName @@ "CHANGELOG.md"  // TODO: Should we parameterize this?
     let changelogVersion =
         match maybeLoadChangelog changelogFname with
         | None -> None
@@ -160,7 +153,7 @@ let calcNextVersion (projectDir : System.IO.DirectoryInfo) =
         | Some v -> v
         | None -> "0.0.1"
 
-let calcNextPrereleaseVersion (projectDir : System.IO.DirectoryInfo) =
+let calcNextPrereleaseVersion (projectDir : DirectoryInfo) =
     Trace.tracefn "calcPrereleaseVersion %s" projectDir.FullName
     let version = calcNextVersion projectDir
     let commitCount =
@@ -169,11 +162,7 @@ let calcNextPrereleaseVersion (projectDir : System.IO.DirectoryInfo) =
         | None ->
             if version = "0.0.1" then
                 // Get all tags since history of repo started
-                Trace.tracefn "findProjectRoot projectDir.FullName returns %A" (findProjectRoot projectDir.FullName)
-                match findProjectRoot projectDir.FullName with
-                | None -> ""
-                | Some projRoot ->
-                    runSimpleGitCommand projRoot "rev-list --count HEAD"
+                runSimpleGitCommand projectRoot "rev-list --count HEAD"
             else
                 // How do we determine how many commits since a specific version... if there's no tag for that version? Answer: We can't, not reliably
                 let projName = projectDir.Name
@@ -194,6 +183,8 @@ Logic we're looking for:
    Then a NuGet package version *without* -alpha#### is created.
    This is done with calcVersion
 *)
+
+// ===== Build targets =====
 
 Target.create "Alpha" (fun _ ->
     Trace.trace "Figuring out alpha versions..."
@@ -217,11 +208,9 @@ Target.create "BumpChangelog" (fun _ ->
         let newChFname= dir.FullName @@ "NEW_CHANGELOG.md"
         bumpChangelog chFname newChFname
         Trace.trace "\nOriginal changelog:"
-        Trace.logItems "" (System.IO.File.ReadAllLines(chFname))
+        Trace.logItems "" (File.ReadAllLines(chFname))
         Trace.trace "Updated changelog:"
-        Trace.logItems "" (System.IO.File.ReadAllLines(newChFname))
+        Trace.logItems "" (File.ReadAllLines(newChFname))
 )
 
 Target.runOrDefault "Default"
-
-// TODO: Create README.md explaining how to install FAKE (dotnet tool install fake-cli -g) and run the build (fake build -t Alpha or fake build)
